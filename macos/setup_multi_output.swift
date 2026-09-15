@@ -84,6 +84,7 @@ if args.contains("--list") {
     exit(0)
 }
 if args.contains("--revert") {
+    guard find(named: kName) != nil else { print("nothing to revert ('\(kName)' not present)"); exit(0) }
     var real: AudioObjectID? = nil
     if let agg = find(named: kName) {
         // the speakers we wrapped are the aggregate's main sub-device

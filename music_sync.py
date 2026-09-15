@@ -507,6 +507,7 @@ def run(args):
     bars = " ▁▂▃▄▅▆▇█"
     last = time.monotonic()
     onsets_seen = 0
+    lost, last_retry = [], 0.0
     with sd.InputStream(device=dev, samplerate=sr, channels=ch, blocksize=int(sr / Analyzer.RATE), callback=cb):
         print("Running. Ctrl-C to stop and restore previous lighting.\n")
         while not stop.is_set():
@@ -537,8 +538,27 @@ def run(args):
                     try:
                         d.update(f, b, h, args.sat, args.mode)
                     except OSError as e:
-                        print(f"\n{d.name}: write failed ({e}); dropping it")
+                        # device unplugged / mode switched / slept: park it and retry later
+                        print(f"\n{d.name}: write failed ({e}); will reconnect when it's back")
+                        try:
+                            d.close()
+                        except OSError:
+                            pass
+                        lost.append((d, d.snap))
                         devs.remove(d)
+                if lost and t0 - last_retry > 2.0:
+                    last_retry = t0
+                    for d, snap in list(lost):
+                        try:
+                            nd = ViaKeyboard(vid=args.kb_vid, pid=args.kb_pid) if d.name == "keyboard" \
+                                else RazerMouse(pid=args.mouse_pid, leds=args.mouse_leds)
+                        except (RuntimeError, OSError):
+                            continue
+                        nd.start(args.hue, args.sat)
+                        nd.snap = snap                       # keep the lighting we first saw
+                        devs.append(nd)
+                        lost.remove((d, snap))
+                        print(f"{d.name}: reconnected")
             el = time.monotonic() - t0
             if el < period:
                 time.sleep(period - el)
@@ -551,6 +571,17 @@ def run(args):
             print(f"{d.name}: previous lighting restored")
         except OSError as e:
             print(f"{d.name}: restore failed ({e})")
+    for d, snap in lost:
+        # one last try for devices that dropped out mid-session
+        try:
+            nd = ViaKeyboard(vid=args.kb_vid, pid=args.kb_pid) if d.name == "keyboard" \
+                else RazerMouse(pid=args.mouse_pid, leds=args.mouse_leds)
+            nd.snap = snap
+            nd.restore()
+            nd.close()
+            print(f"{d.name}: reconnected and previous lighting restored")
+        except (RuntimeError, OSError) as e:
+            print(f"{d.name}: still unreachable, lighting not restored ({e})")
 
 
 def probe(args):
