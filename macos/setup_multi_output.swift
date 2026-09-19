@@ -7,6 +7,7 @@ import CoreAudio
 import Foundation
 
 let kName = "Speakers + BlackHole"
+let kState = NSString(string: "~/.keyboard-music-lightsync-output").expandingTildeInPath   // UID of the wrapped speakers
 
 func prop(_ sel: AudioObjectPropertySelector, _ scope: AudioObjectPropertyScope = kAudioObjectPropertyScopeGlobal) -> AudioObjectPropertyAddress {
     AudioObjectPropertyAddress(mSelector: sel, mScope: scope, mElement: kAudioObjectPropertyElementMain)
@@ -79,6 +80,28 @@ if let i = args.firstIndex(of: "--use"), i + 1 < args.count {
     guard let d = find(named: args[i + 1]) else { print("device not found: \(args[i + 1])"); exit(1) }
     setDefaultOutput(d); print("Default output -> \(args[i + 1])"); exit(0)
 }
+if args.contains("--inspect") {
+    guard let agg = find(named: kName) else { print("no '\(kName)'"); exit(0) }
+    func strList(_ sel: AudioObjectPropertySelector) -> [String] {
+        var addr = prop(sel); var size = UInt32(MemoryLayout<CFArray?>.size); var v: Unmanaged<CFArray>? = nil
+        let st = withUnsafeMutablePointer(to: &v) { AudioObjectGetPropertyData(agg, &addr, 0, nil, &size, $0) }
+        guard st == noErr, let a = v?.takeRetainedValue() as? [String] else { return ["<err \(st)>"] }
+        return a
+    }
+    print("full sub-devices  :", strList(kAudioAggregateDevicePropertyFullSubDeviceList))
+    print("active sub-devices:", strList(kAudioAggregateDevicePropertyActiveSubDeviceList))
+    print("main sub-device   :", string(agg, kAudioAggregateDevicePropertyMainSubDevice) ?? "?")
+    var addr = prop(kAudioDevicePropertyNominalSampleRate); var rate: Double = 0; var sz = UInt32(8)
+    AudioObjectGetPropertyData(agg, &addr, 0, nil, &sz, &rate); print("aggregate rate    :", rate)
+    for d in devices where outputChannels(d) > 0 {
+        var r: Double = 0; AudioObjectGetPropertyData(d, &addr, 0, nil, &sz, &r)
+        var ta = prop(kAudioDevicePropertyTransportType); var tt: UInt32 = 0; var ts = UInt32(4)
+        AudioObjectGetPropertyData(d, &ta, 0, nil, &ts, &tt)
+        let t4 = String(bytes: [UInt8(tt >> 24 & 0xff), UInt8(tt >> 16 & 0xff), UInt8(tt >> 8 & 0xff), UInt8(tt & 0xff)], encoding: .ascii) ?? "?"
+        print("  \(string(d, kAudioObjectPropertyName) ?? "?")  rate=\(Int(r))  transport=\(t4)  uid=\(string(d, kAudioDevicePropertyDeviceUID) ?? "?")")
+    }
+    exit(0)
+}
 if args.contains("--list") {
     for d in devices where outputChannels(d) > 0 { print(string(d, kAudioObjectPropertyName) ?? "?") }
     exit(0)
@@ -86,7 +109,10 @@ if args.contains("--list") {
 if args.contains("--revert") {
     guard find(named: kName) != nil else { print("nothing to revert ('\(kName)' not present)"); exit(0) }
     var real: AudioObjectID? = nil
-    if let agg = find(named: kName) {
+    if let uid = try? String(contentsOfFile: kState, encoding: .utf8), let d = find(uid: uid.trimmingCharacters(in: .whitespacesAndNewlines)) {
+        real = d
+    }
+    if real == nil, let agg = find(named: kName) {
         // the speakers we wrapped are the aggregate's main sub-device
         var addr = prop(kAudioAggregateDevicePropertyMainSubDevice)
         var size = UInt32(MemoryLayout<CFString?>.size)
@@ -130,12 +156,34 @@ let desc: [String: Any] = [
     kAudioAggregateDeviceNameKey: kName,
     kAudioAggregateDeviceUIDKey: "com.keyboard-music-lightsync.multiout",
     kAudioAggregateDeviceIsStackedKey: 1,          // 1 = Multi-Output Device
-    kAudioAggregateDeviceMainSubDeviceKey: masterUID,
+    // BlackHole is the clock source (stable, virtual); the speakers are drift-corrected.
+    // With the speakers as master, a Bluetooth output starves BlackHole of audio.
+    kAudioAggregateDeviceMainSubDeviceKey: bhUID,
     kAudioAggregateDeviceSubDeviceListKey: [
-        [kAudioSubDeviceUIDKey: masterUID],
-        [kAudioSubDeviceUIDKey: bhUID, kAudioSubDeviceDriftCompensationKey: 1],
+        [kAudioSubDeviceUIDKey: bhUID],
+        [kAudioSubDeviceUIDKey: masterUID, kAudioSubDeviceDriftCompensationKey: 1],
     ],
 ]
+try? masterUID.write(toFile: kState, atomically: true, encoding: .utf8)
+// A stacked device silently starves sub-devices whose nominal rate differs from
+// the main one (seen with a 44.1 kHz Bluetooth soundbar + 48 kHz BlackHole), so
+// pin BlackHole to the speakers' rate first.
+func nominalRate(_ id: AudioObjectID) -> Double {
+    var addr = prop(kAudioDevicePropertyNominalSampleRate)
+    var rate: Double = 0; var size = UInt32(MemoryLayout<Double>.size)
+    AudioObjectGetPropertyData(id, &addr, 0, nil, &size, &rate); return rate
+}
+func setNominalRate(_ id: AudioObjectID, _ rate: Double) -> Bool {
+    var addr = prop(kAudioDevicePropertyNominalSampleRate)
+    var r = rate
+    return AudioObjectSetPropertyData(id, &addr, 0, nil, UInt32(MemoryLayout<Double>.size), &r) == noErr
+}
+let masterRate = nominalRate(master)
+if masterRate > 0 && nominalRate(bh) != masterRate {
+    if setNominalRate(bh, masterRate) { usleep(200_000); print("BlackHole sample rate -> \(Int(masterRate)) Hz to match \(masterName)") }
+    else { print("warning: could not set BlackHole to \(Int(masterRate)) Hz") }
+}
+
 var aggID: AudioObjectID = 0
 let st = AudioHardwareCreateAggregateDevice(desc as CFDictionary, &aggID)
 guard st == noErr else { print("create failed: \(st)"); exit(1) }
