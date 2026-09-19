@@ -474,8 +474,8 @@ class Mapper:
 
 def run(args):
     devs = [] if args.dry_run else open_devices(args)
-    if not args.dry_run and not devs:
-        sys.exit("No devices to drive. Keyboard wired (Fn+5)? Mouse plugged in?")
+    if not args.dry_run and not devs and args.no_keyboard and args.no_mouse:
+        sys.exit("No devices to drive.")
     for d in devs:
         print(f"{d.name}: {d.label}")
         d.start(args.hue, args.sat)
@@ -508,6 +508,15 @@ def run(args):
     last = time.monotonic()
     onsets_seen = 0
     lost, last_retry = [], 0.0
+    # devices that weren't there at start get the same retry treatment
+    class _Want:
+        def __init__(self, name): self.name, self.snap = name, None
+    present = {d.name for d in devs}
+    if not args.no_keyboard and "keyboard" not in present:
+        lost.append((_Want("keyboard"), None))
+        print("keyboard: not found yet; will attach when it's wired (Fn+5 on Womier boards)")
+    if not args.no_mouse and "mouse" not in present:
+        lost.append((_Want("mouse"), None))
     with sd.InputStream(device=dev, samplerate=sr, channels=ch, blocksize=int(sr / Analyzer.RATE), callback=cb):
         print("Running. Ctrl-C to stop and restore previous lighting.\n")
         while not stop.is_set():
@@ -555,7 +564,8 @@ def run(args):
                         except (RuntimeError, OSError):
                             continue
                         nd.start(args.hue, args.sat)
-                        nd.snap = snap                       # keep the lighting we first saw
+                        if snap is not None:
+                            nd.snap = snap                   # keep the lighting we first saw
                         devs.append(nd)
                         lost.remove((d, snap))
                         print(f"{d.name}: reconnected")
@@ -572,6 +582,8 @@ def run(args):
         except OSError as e:
             print(f"{d.name}: restore failed ({e})")
     for d, snap in lost:
+        if snap is None:
+            continue                                         # never connected: nothing to restore
         # one last try for devices that dropped out mid-session
         try:
             nd = ViaKeyboard(vid=args.kb_vid, pid=args.kb_pid) if d.name == "keyboard" \
