@@ -80,28 +80,6 @@ if let i = args.firstIndex(of: "--use"), i + 1 < args.count {
     guard let d = find(named: args[i + 1]) else { print("device not found: \(args[i + 1])"); exit(1) }
     setDefaultOutput(d); print("Default output -> \(args[i + 1])"); exit(0)
 }
-if args.contains("--inspect") {
-    guard let agg = find(named: kName) else { print("no '\(kName)'"); exit(0) }
-    func strList(_ sel: AudioObjectPropertySelector) -> [String] {
-        var addr = prop(sel); var size = UInt32(MemoryLayout<CFArray?>.size); var v: Unmanaged<CFArray>? = nil
-        let st = withUnsafeMutablePointer(to: &v) { AudioObjectGetPropertyData(agg, &addr, 0, nil, &size, $0) }
-        guard st == noErr, let a = v?.takeRetainedValue() as? [String] else { return ["<err \(st)>"] }
-        return a
-    }
-    print("full sub-devices  :", strList(kAudioAggregateDevicePropertyFullSubDeviceList))
-    print("active sub-devices:", strList(kAudioAggregateDevicePropertyActiveSubDeviceList))
-    print("main sub-device   :", string(agg, kAudioAggregateDevicePropertyMainSubDevice) ?? "?")
-    var addr = prop(kAudioDevicePropertyNominalSampleRate); var rate: Double = 0; var sz = UInt32(8)
-    AudioObjectGetPropertyData(agg, &addr, 0, nil, &sz, &rate); print("aggregate rate    :", rate)
-    for d in devices where outputChannels(d) > 0 {
-        var r: Double = 0; AudioObjectGetPropertyData(d, &addr, 0, nil, &sz, &r)
-        var ta = prop(kAudioDevicePropertyTransportType); var tt: UInt32 = 0; var ts = UInt32(4)
-        AudioObjectGetPropertyData(d, &ta, 0, nil, &ts, &tt)
-        let t4 = String(bytes: [UInt8(tt >> 24 & 0xff), UInt8(tt >> 16 & 0xff), UInt8(tt >> 8 & 0xff), UInt8(tt & 0xff)], encoding: .ascii) ?? "?"
-        print("  \(string(d, kAudioObjectPropertyName) ?? "?")  rate=\(Int(r))  transport=\(t4)  uid=\(string(d, kAudioDevicePropertyDeviceUID) ?? "?")")
-    }
-    exit(0)
-}
 if args.contains("--list") {
     for d in devices where outputChannels(d) > 0 { print(string(d, kAudioObjectPropertyName) ?? "?") }
     exit(0)
